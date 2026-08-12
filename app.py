@@ -3,407 +3,329 @@ import pandas as pd
 import requests
 from datetime import date
 
-st.set_page_config(
-    page_title="Praćenje narudžbi",
-    page_icon="📦",
-    layout="wide"
-)
+st.set_page_config(page_title="Praćenje narudžbi", page_icon="📦", layout="wide")
 
-# Podatke upisuješ u .streamlit/secrets.toml lokalno,
-# a kasnije u Streamlit Cloud -> App settings -> Secrets.
 SUPABASE_URL = st.secrets["SUPABASE_URL"].rstrip("/")
-SUPABASE_KEY = st.secrets["SUPABASE_SECRET_KEY"]
-APP_PASSWORD = st.secrets.get("APP_PASSWORD", "")
+SUPABASE_KEY = st.secrets["SUPABASE_PUBLISHABLE_KEY"]
+TABLE = "narudzbe"
 
-TABLE_NAME = "narudzbe"
+STATUS_OPTIONS = ["Čeka odgovor", "Naručeno", "U dolasku", "Problem", "Stiglo", "Otkazano"]
+ODGOVOR_OPTIONS = ["Da", "Ne", "Djelimično"]
 
-STATUS_OPTIONS = [
-    "Čeka odgovor",
-    "Naručeno",
-    "U dolasku",
-    "Stiglo",
-    "Problem",
-    "Otkazano"
-]
+def public_headers():
+    return {"apikey": SUPABASE_KEY, "Content-Type": "application/json"}
 
-ODGOVOR_OPTIONS = [
-    "Da",
-    "Ne",
-    "Djelimično"
-]
-
-
-def supabase_headers():
+def auth_headers():
     return {
         "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Authorization": f"Bearer {st.session_state.access_token}",
         "Content-Type": "application/json",
-        "Prefer": "return=representation"
+        "Prefer": "return=representation",
     }
 
-
-def api_url():
-    return f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
-
-
-def load_data():
-    params = {
-        "select": "*",
-        "order": "id.desc"
-    }
-
-    response = requests.get(
-        api_url(),
-        headers=supabase_headers(),
-        params=params,
-        timeout=20
+def sign_up(email, password):
+    return requests.post(
+        f"{SUPABASE_URL}/auth/v1/signup",
+        headers=public_headers(),
+        json={"email": email, "password": password},
+        timeout=20,
     )
 
-    if response.status_code != 200:
-        st.error("Greška pri učitavanju podataka iz Supabase baze.")
-        st.code(response.text)
+def sign_in(email, password):
+    return requests.post(
+        f"{SUPABASE_URL}/auth/v1/token?grant_type=password",
+        headers=public_headers(),
+        json={"email": email, "password": password},
+        timeout=20,
+    )
+
+def db_url():
+    return f"{SUPABASE_URL}/rest/v1/{TABLE}"
+
+def load_orders():
+    r = requests.get(
+        db_url(),
+        headers=auth_headers(),
+        params={"select": "*", "order": "id.desc"},
+        timeout=20,
+    )
+    if r.status_code != 200:
+        st.error("Ne mogu učitati narudžbe.")
+        st.code(r.text)
         return pd.DataFrame()
-
-    data = response.json()
-    return pd.DataFrame(data)
-
+    return pd.DataFrame(r.json())
 
 def insert_order(order):
-    response = requests.post(
-        api_url(),
-        headers=supabase_headers(),
-        json=order,
-        timeout=20
-    )
-
-    if response.status_code not in [200, 201]:
+    order["user_id"] = st.session_state.user_id
+    r = requests.post(db_url(), headers=auth_headers(), json=order, timeout=20)
+    if r.status_code not in (200, 201):
         st.error("Greška pri spremanju narudžbe.")
-        st.code(response.text)
+        st.code(r.text)
         return False
-
     return True
 
-
-def update_order(order_id, updated_order):
-    url = f"{api_url()}?id=eq.{order_id}"
-
-    response = requests.patch(
-        url,
-        headers=supabase_headers(),
-        json=updated_order,
-        timeout=20
+def update_order(order_id, values):
+    r = requests.patch(
+        f"{db_url()}?id=eq.{order_id}",
+        headers=auth_headers(),
+        json=values,
+        timeout=20,
     )
-
-    if response.status_code not in [200, 204]:
-        st.error("Greška pri uređivanju narudžbe.")
-        st.code(response.text)
+    if r.status_code not in (200, 204):
+        st.error("Greška pri izmjeni narudžbe.")
+        st.code(r.text)
         return False
-
     return True
-
 
 def delete_order(order_id):
-    url = f"{api_url()}?id=eq.{order_id}"
-
-    response = requests.delete(
-        url,
-        headers=supabase_headers(),
-        timeout=20
+    r = requests.delete(
+        f"{db_url()}?id=eq.{order_id}",
+        headers=auth_headers(),
+        timeout=20,
     )
-
-    if response.status_code not in [200, 204]:
-        st.error("Greška pri brisanju narudžbe.")
-        st.code(response.text)
+    if r.status_code not in (200, 204):
+        st.error("Greška pri brisanju.")
+        st.code(r.text)
         return False
-
     return True
 
+for key, default in {
+    "access_token": None,
+    "user_id": None,
+    "user_email": None,
+    "edit_id": None,
+    "form_version": 0,
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
 
-def check_late(row):
-    if row.get("status", "") in ["Stiglo", "Otkazano"]:
-        return "Ne"
+def logout():
+    st.session_state.access_token = None
+    st.session_state.user_id = None
+    st.session_state.user_email = None
+    st.session_state.edit_id = None
+    st.rerun()
 
-    value = row.get("kada_dolazi", "")
+def show_login():
+    st.title("📦 Praćenje narudžbi")
+    st.caption("Svaki korisnik vidi samo svoje narudžbe.")
 
-    if value in ["", None]:
-        return "Ne"
+    login_tab, register_tab = st.tabs(["🔐 Prijava", "➕ Registracija"])
 
-    try:
-        arrival_date = pd.to_datetime(value).date()
-        if arrival_date < date.today():
-            return "Da"
-    except Exception:
-        return "Ne"
+    with login_tab:
+        email = st.text_input("Email", key="login_email")
+        password = st.text_input("Lozinka", type="password", key="login_password")
 
-    return "Ne"
+        if st.button("Prijavi se", use_container_width=True):
+            if not email or not password:
+                st.warning("Unesi email i lozinku.")
+            else:
+                r = sign_in(email.strip(), password)
+                if r.status_code == 200:
+                    data = r.json()
+                    st.session_state.access_token = data["access_token"]
+                    st.session_state.user_id = data["user"]["id"]
+                    st.session_state.user_email = data["user"]["email"]
+                    st.rerun()
+                else:
+                    st.error("Prijava nije uspjela.")
+                    st.code(r.text)
 
+    with register_tab:
+        new_email = st.text_input("Email", key="register_email")
+        new_password = st.text_input("Lozinka", type="password", key="register_password")
+        repeat_password = st.text_input("Ponovi lozinku", type="password", key="register_repeat")
 
-def login():
-    if APP_PASSWORD == "":
-        return True
+        if st.button("Napravi nalog", use_container_width=True):
+            if not new_email or not new_password:
+                st.warning("Unesi email i lozinku.")
+            elif len(new_password) < 6:
+                st.warning("Lozinka mora imati najmanje 6 karaktera.")
+            elif new_password != repeat_password:
+                st.warning("Lozinke se ne podudaraju.")
+            else:
+                r = sign_up(new_email.strip(), new_password)
+                if r.status_code in (200, 201):
+                    data = r.json()
+                    if data.get("access_token") and data.get("user"):
+                        st.session_state.access_token = data["access_token"]
+                        st.session_state.user_id = data["user"]["id"]
+                        st.session_state.user_email = data["user"]["email"]
+                        st.rerun()
+                    else:
+                        st.success("Nalog je napravljen. Provjeri email i potvrdi registraciju, pa se onda prijavi.")
+                else:
+                    st.error("Registracija nije uspjela.")
+                    st.code(r.text)
 
-    if "logged_in" not in st.session_state:
-        st.session_state.logged_in = False
-
-    if st.session_state.logged_in:
-        return True
-
-    st.title("🔐 Praćenje narudžbi")
-    password = st.text_input("Unesi šifru za ulaz", type="password")
-
-    if st.button("Uđi"):
-        if password == APP_PASSWORD:
-            st.session_state.logged_in = True
-            st.rerun()
-        else:
-            st.error("Pogrešna šifra.")
-
-    return False
-
-
-if "form_version" not in st.session_state:
-    st.session_state.form_version = 0
-
-if "saved_message" not in st.session_state:
-    st.session_state.saved_message = False
-
-
-if not login():
+if not st.session_state.access_token:
+    show_login()
     st.stop()
 
+top1, top2 = st.columns([5, 1])
+with top1:
+    st.title("📦 Moje narudžbe")
+    st.caption(f"Prijavljen: {st.session_state.user_email}")
+with top2:
+    st.write("")
+    st.write("")
+    if st.button("Odjavi se"):
+        logout()
 
-df = load_data()
+df = load_orders()
 
-st.title("📦 Praćenje narudžbi")
-st.caption("Online mini aplikacija za praćenje narudžbi. Podaci se čuvaju u Supabase bazi.")
+if df.empty:
+    df = pd.DataFrame(columns=[
+        "id","dobavljac","masina","sta_je_naruceno","datum_narudzbe",
+        "kada_dolazi","status","odgovorio","sta_nemaju","napomena"
+    ])
 
-if st.session_state.saved_message:
-    st.success("Narudžba je sačuvana i forma je očišćena.")
-    st.session_state.saved_message = False
+for col in ["dobavljac","masina","sta_je_naruceno","datum_narudzbe","kada_dolazi","status","odgovorio","sta_nemaju","napomena"]:
+    if col in df.columns:
+        df[col] = df[col].fillna("")
+
+active_df = df[~df["status"].isin(["Stiglo", "Otkazano"])].copy()
+arrived_df = df[df["status"] == "Stiglo"].copy()
+canceled_df = df[df["status"] == "Otkazano"].copy()
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Aktivne", len(active_df))
+m2.metric("Stiglo", len(arrived_df))
+m3.metric("Otkazano", len(canceled_df))
+m4.metric("Ukupno", len(df))
 
 st.markdown("---")
 
-# Statistika
-if len(df) == 0:
-    total_orders = 0
-    waiting_orders = 0
-    arriving_orders = 0
-    problem_orders = 0
-else:
-    total_orders = len(df)
-    waiting_orders = len(df[df["status"] == "Čeka odgovor"])
-    arriving_orders = len(df[df["status"] == "U dolasku"])
-    problem_orders = len(df[df["status"] == "Problem"])
-
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Ukupno narudžbi", total_orders)
-col2.metric("Čeka odgovor", waiting_orders)
-col3.metric("U dolasku", arriving_orders)
-col4.metric("Problem", problem_orders)
-
-st.markdown("---")
-
-# Dodavanje nove narudžbe
 with st.expander("➕ Dodaj novu narudžbu", expanded=True):
-    form_key = f"add_order_form_{st.session_state.form_version}"
-
+    form_key = f"add_order_{st.session_state.form_version}"
     with st.form(form_key, clear_on_submit=True):
-        c1, c2 = st.columns(2)
+        left, right = st.columns(2)
+        with left:
+            dobavljac = st.text_input("Dobavljač")
+            masina = st.text_input("Za koju mašinu je naručeno")
+            naruceno = st.text_area("Šta je naručeno")
+        with right:
+            datum_narudzbe = st.date_input("Kad je naručeno", value=date.today())
+            kada_dolazi = st.date_input("Kada dolazi", value=date.today())
+            status = st.selectbox("Status", STATUS_OPTIONS)
+            odgovorio = st.selectbox("Da li je odgovorio", ODGOVOR_OPTIONS)
+        sta_nemaju = st.text_area("Šta nemaju od onog što nam treba")
+        napomena = st.text_area("Napomena")
 
-        with c1:
-            dobavljac = st.text_input(
-                "Dobavljač",
-                placeholder="npr. Goran, CNC Centar, AM Pneumatik",
-                key=f"dobavljac_{st.session_state.form_version}"
-            )
-            masina = st.text_input(
-                "Za koju mašinu je naručeno",
-                placeholder="npr. Pakerica 1, CNC mašina, transporter",
-                key=f"masina_{st.session_state.form_version}"
-            )
-            sta_je_naruceno = st.text_area(
-                "Šta je naručeno",
-                placeholder="npr. cilindar, regulator, remen, motor...",
-                key=f"naruceno_{st.session_state.form_version}"
-            )
-
-        with c2:
-            datum_narudzbe = st.date_input(
-                "Kad je naručeno",
-                value=date.today(),
-                key=f"datum_{st.session_state.form_version}"
-            )
-            kada_dolazi = st.date_input(
-                "Kada dolazi",
-                value=date.today(),
-                key=f"dolazi_{st.session_state.form_version}"
-            )
-            status = st.selectbox(
-                "Status",
-                STATUS_OPTIONS,
-                key=f"status_{st.session_state.form_version}"
-            )
-            odgovorio = st.selectbox(
-                "Da li je odgovorio",
-                ODGOVOR_OPTIONS,
-                key=f"odgovorio_{st.session_state.form_version}"
-            )
-
-        sta_nemaju = st.text_area(
-            "Šta nemaju od onog što nam treba",
-            placeholder="npr. nemaju regulator 1/4, nude zamjenu...",
-            key=f"nemaju_{st.session_state.form_version}"
-        )
-        napomena = st.text_area(
-            "Napomena",
-            placeholder="npr. nazvati ponovo, čekamo ponudu, provjeriti cijenu dostave...",
-            key=f"napomena_{st.session_state.form_version}"
-        )
-
-        submitted = st.form_submit_button("Sačuvaj narudžbu")
-
-        if submitted:
-            if dobavljac.strip() == "" or sta_je_naruceno.strip() == "":
-                st.error("Moraš unijeti barem dobavljača i šta je naručeno.")
+        if st.form_submit_button("Sačuvaj narudžbu"):
+            if not dobavljac.strip():
+                st.warning("Unesi dobavljača.")
+            elif not naruceno.strip():
+                st.warning("Unesi šta je naručeno.")
             else:
-                new_order = {
+                order = {
                     "dobavljac": dobavljac.strip(),
                     "masina": masina.strip(),
-                    "sta_je_naruceno": sta_je_naruceno.strip(),
+                    "sta_je_naruceno": naruceno.strip(),
                     "datum_narudzbe": datum_narudzbe.strftime("%Y-%m-%d"),
                     "kada_dolazi": kada_dolazi.strftime("%Y-%m-%d"),
                     "status": status,
                     "odgovorio": odgovorio,
                     "sta_nemaju": sta_nemaju.strip(),
-                    "napomena": napomena.strip()
+                    "napomena": napomena.strip(),
                 }
-
-                if insert_order(new_order):
+                if insert_order(order):
                     st.session_state.form_version += 1
-                    st.session_state.saved_message = True
                     st.rerun()
 
 st.markdown("---")
+st.subheader("📌 Aktivne narudžbe")
 
-# Filteri
-st.subheader("🔎 Pregled i filteri")
-
-if len(df) == 0:
-    st.info("Još nema narudžbi.")
+if active_df.empty:
+    st.info("Nema aktivnih narudžbi.")
 else:
-    f1, f2, f3 = st.columns(3)
+    for _, row in active_df.iterrows():
+        order_id = int(row["id"])
+        with st.container(border=True):
+            st.write(f"### {row['dobavljac']}")
+            st.write(f"**Mašina:** {row['masina']}")
+            st.write(f"**Naručeno:** {row['sta_je_naruceno']}")
+            st.write(f"**Status:** {row['status']}")
+            st.write(f"**Kada dolazi:** {row['kada_dolazi']}")
 
-    with f1:
-        dobavljaci = ["Svi"] + sorted([x for x in df["dobavljac"].fillna("").unique().tolist() if x != ""])
-        selected_dobavljac = st.selectbox("Filter po dobavljaču", dobavljaci)
-
-    with f2:
-        masine = ["Sve"] + sorted([x for x in df["masina"].fillna("").unique().tolist() if x != ""])
-        selected_masina = st.selectbox("Filter po mašini", masine)
-
-    with f3:
-        statusi = ["Svi"] + STATUS_OPTIONS
-        selected_status = st.selectbox("Filter po statusu", statusi)
-
-    search_text = st.text_input("Pretraga", placeholder="Upiši npr. motor, pakerica, Goran, reduktor...")
-
-    filtered_df = df.copy()
-
-    if selected_dobavljac != "Svi":
-        filtered_df = filtered_df[filtered_df["dobavljac"] == selected_dobavljac]
-
-    if selected_masina != "Sve":
-        filtered_df = filtered_df[filtered_df["masina"] == selected_masina]
-
-    if selected_status != "Svi":
-        filtered_df = filtered_df[filtered_df["status"] == selected_status]
-
-    if search_text.strip() != "":
-        search_lower = search_text.lower()
-        filtered_df = filtered_df[
-            filtered_df.apply(
-                lambda row: search_lower in " ".join(row.astype(str)).lower(),
-                axis=1
-            )
-        ]
-
-    if len(filtered_df) > 0:
-        display_df = filtered_df.copy()
-        display_df["Kasni"] = display_df.apply(check_late, axis=1)
-
-        display_df = display_df.rename(columns={
-            "id": "ID",
-            "created_at": "Kreirano",
-            "dobavljac": "Dobavljač",
-            "masina": "Mašina",
-            "sta_je_naruceno": "Šta je naručeno",
-            "datum_narudzbe": "Datum narudžbe",
-            "kada_dolazi": "Kada dolazi",
-            "status": "Status",
-            "odgovorio": "Odgovorio",
-            "sta_nemaju": "Šta nemaju",
-            "napomena": "Napomena"
-        })
-
-        st.dataframe(
-            display_df,
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.info("Nema rezultata za odabrane filtere.")
+            b1, b2, b3, _ = st.columns([1, 1, 1, 5])
+            if b1.button("✏️ Edit", key=f"edit_{order_id}"):
+                st.session_state.edit_id = order_id
+                st.rerun()
+            if b2.button("✅ Stiglo", key=f"arrived_{order_id}"):
+                if update_order(order_id, {"status": "Stiglo"}):
+                    st.rerun()
+            if b3.button("🚫 Otkaži", key=f"cancel_{order_id}"):
+                if update_order(order_id, {"status": "Otkazano"}):
+                    st.rerun()
 
 st.markdown("---")
+st.subheader("✅ Roba koja je stigla")
 
-# Uređivanje jedne narudžbe
-with st.expander("✏️ Uredi narudžbu"):
-    if len(df) == 0:
-        st.info("Trenutno nema narudžbi za uređivanje.")
+if arrived_df.empty:
+    st.info("Još nema robe označene kao stigla.")
+else:
+    for _, row in arrived_df.iterrows():
+        order_id = int(row["id"])
+        with st.container(border=True):
+            st.write(f"### ✅ {row['dobavljac']}")
+            st.write(f"**Mašina:** {row['masina']}")
+            st.write(f"**Stiglo:** {row['sta_je_naruceno']}")
+            b1, b2, _ = st.columns([1, 1, 6])
+            if b1.button("✏️ Edit", key=f"edit_arrived_{order_id}"):
+                st.session_state.edit_id = order_id
+                st.rerun()
+            if b2.button("↩️ Vrati", key=f"return_{order_id}"):
+                if update_order(order_id, {"status": "Naručeno"}):
+                    st.rerun()
+
+with st.expander("🚫 Otkazano"):
+    if canceled_df.empty:
+        st.info("Nema otkazanih narudžbi.")
     else:
-        edit_options = []
-        id_lookup = {}
+        for _, row in canceled_df.iterrows():
+            st.write(f"**{row['dobavljac']}** — {row['sta_je_naruceno']} ({row['masina']})")
 
-        for _, row in df.iterrows():
-            text = f"{row['id']}. {row['dobavljac']} | {row.get('masina', '')} | {row['sta_je_naruceno']}"
-            edit_options.append(text)
-            id_lookup[text] = row["id"]
-
-        selected_edit = st.selectbox("Odaberi narudžbu za uređivanje", edit_options)
-        selected_id = id_lookup[selected_edit]
-        selected_row = df[df["id"] == selected_id].iloc[0]
+if st.session_state.edit_id is not None:
+    selected = df[df["id"] == st.session_state.edit_id]
+    if not selected.empty:
+        row = selected.iloc[0]
+        st.markdown("---")
+        st.subheader("✏️ Uredi narudžbu")
 
         with st.form("edit_order_form"):
-            ec1, ec2 = st.columns(2)
-
-            with ec1:
-                edit_dobavljac = st.text_input("Dobavljač", value=str(selected_row.get("dobavljac", "")))
-                edit_masina = st.text_input("Mašina", value=str(selected_row.get("masina", "")))
-                edit_naruceno = st.text_area("Šta je naručeno", value=str(selected_row.get("sta_je_naruceno", "")))
-
-            with ec2:
+            left, right = st.columns(2)
+            with left:
+                edit_dobavljac = st.text_input("Dobavljač", value=str(row["dobavljac"]))
+                edit_masina = st.text_input("Mašina", value=str(row["masina"]))
+                edit_naruceno = st.text_area("Šta je naručeno", value=str(row["sta_je_naruceno"]))
+            with right:
                 edit_datum = st.date_input(
                     "Datum narudžbe",
-                    value=pd.to_datetime(selected_row.get("datum_narudzbe", date.today())).date()
+                    value=pd.to_datetime(row["datum_narudzbe"]).date() if row["datum_narudzbe"] else date.today(),
                 )
                 edit_dolazi = st.date_input(
                     "Kada dolazi",
-                    value=pd.to_datetime(selected_row.get("kada_dolazi", date.today())).date()
+                    value=pd.to_datetime(row["kada_dolazi"]).date() if row["kada_dolazi"] else date.today(),
                 )
-                current_status = selected_row.get("status", STATUS_OPTIONS[0])
-                current_status_index = STATUS_OPTIONS.index(current_status) if current_status in STATUS_OPTIONS else 0
-                edit_status = st.selectbox("Status", STATUS_OPTIONS, index=current_status_index)
+                current_status = row["status"] if row["status"] in STATUS_OPTIONS else "Naručeno"
+                edit_status = st.selectbox("Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(current_status))
+                current_odgovor = row["odgovorio"] if row["odgovorio"] in ODGOVOR_OPTIONS else "Da"
+                edit_odgovorio = st.selectbox("Odgovorio", ODGOVOR_OPTIONS, index=ODGOVOR_OPTIONS.index(current_odgovor))
 
-                current_odgovor = selected_row.get("odgovorio", ODGOVOR_OPTIONS[0])
-                current_odgovor_index = ODGOVOR_OPTIONS.index(current_odgovor) if current_odgovor in ODGOVOR_OPTIONS else 0
-                edit_odgovorio = st.selectbox("Odgovorio", ODGOVOR_OPTIONS, index=current_odgovor_index)
+            edit_nemaju = st.text_area("Šta nemaju", value=str(row["sta_nemaju"]))
+            edit_napomena = st.text_area("Napomena", value=str(row["napomena"]))
 
-            edit_nemaju = st.text_area("Šta nemaju", value=str(selected_row.get("sta_nemaju", "")))
-            edit_napomena = st.text_area("Napomena", value=str(selected_row.get("napomena", "")))
+            save_col, close_col = st.columns([1, 5])
+            save = save_col.form_submit_button("Sačuvaj izmjene")
+            close = close_col.form_submit_button("Zatvori")
 
-            edit_submitted = st.form_submit_button("Sačuvaj izmjene")
+            if close:
+                st.session_state.edit_id = None
+                st.rerun()
 
-            if edit_submitted:
-                updated_order = {
+            if save:
+                updated = {
                     "dobavljac": edit_dobavljac.strip(),
                     "masina": edit_masina.strip(),
                     "sta_je_naruceno": edit_naruceno.strip(),
@@ -412,68 +334,27 @@ with st.expander("✏️ Uredi narudžbu"):
                     "status": edit_status,
                     "odgovorio": edit_odgovorio,
                     "sta_nemaju": edit_nemaju.strip(),
-                    "napomena": edit_napomena.strip()
+                    "napomena": edit_napomena.strip(),
                 }
-
-                if update_order(selected_id, updated_order):
-                    st.success("Izmjene su sačuvane.")
-                    st.rerun()
-
-# Brisanje narudžbe
-with st.expander("🗑️ Obriši narudžbu"):
-    if len(df) == 0:
-        st.info("Trenutno nema narudžbi za brisanje.")
-    else:
-        delete_options = []
-        delete_lookup = {}
-
-        for _, row in df.iterrows():
-            text = f"{row['id']}. {row['dobavljac']} | {row.get('masina', '')} | {row['sta_je_naruceno']}"
-            delete_options.append(text)
-            delete_lookup[text] = row["id"]
-
-        selected_delete = st.selectbox("Odaberi narudžbu za brisanje", delete_options)
-
-        confirm_delete = st.checkbox("Potvrđujem da želim obrisati ovu narudžbu")
-
-        if st.button("Obriši odabranu narudžbu"):
-            if not confirm_delete:
-                st.warning("Prvo označi potvrdu za brisanje.")
-            else:
-                selected_id = delete_lookup[selected_delete]
-                if delete_order(selected_id):
-                    st.success("Narudžba je obrisana.")
+                if update_order(st.session_state.edit_id, updated):
+                    st.session_state.edit_id = None
                     st.rerun()
 
 st.markdown("---")
+with st.expander("🗑️ Obriši narudžbu"):
+    if df.empty:
+        st.info("Nema narudžbi.")
+    else:
+        options = {}
+        for _, row in df.iterrows():
+            label = f"{row['id']} | {row['dobavljac']} | {row['sta_je_naruceno']}"
+            options[label] = int(row["id"])
 
-# Export Excel
-st.subheader("📥 Export")
+        selected_label = st.selectbox("Odaberi narudžbu", list(options.keys()))
+        confirm = st.checkbox("Potvrđujem brisanje")
 
-if len(df) > 0:
-    export_df = df.rename(columns={
-        "id": "ID",
-        "created_at": "Kreirano",
-        "dobavljac": "Dobavljač",
-        "masina": "Mašina",
-        "sta_je_naruceno": "Šta je naručeno",
-        "datum_narudzbe": "Datum narudžbe",
-        "kada_dolazi": "Kada dolazi",
-        "status": "Status",
-        "odgovorio": "Odgovorio",
-        "sta_nemaju": "Šta nemaju",
-        "napomena": "Napomena"
-    })
-
-    excel_file = "narudzbe_export.xlsx"
-    export_df.to_excel(excel_file, index=False)
-
-    with open(excel_file, "rb") as file:
-        st.download_button(
-            label="Preuzmi Excel fajl",
-            data=file,
-            file_name="narudzbe_export.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-else:
-    st.info("Nema podataka za export.")
+        if st.button("Obriši narudžbu"):
+            if not confirm:
+                st.warning("Označi potvrdu za brisanje.")
+            elif delete_order(options[selected_label]):
+                st.rerun()
