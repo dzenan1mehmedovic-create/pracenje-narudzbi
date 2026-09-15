@@ -2,359 +2,197 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import date
+from io import BytesIO
 
-st.set_page_config(page_title="Praćenje narudžbi", page_icon="📦", layout="wide")
+st.set_page_config(page_title='Order Hub', page_icon='📦', layout='wide', initial_sidebar_state='expanded')
 
-SUPABASE_URL = st.secrets["SUPABASE_URL"].rstrip("/")
-SUPABASE_KEY = st.secrets["SUPABASE_PUBLISHABLE_KEY"]
-TABLE = "narudzbe"
+# ---------- FUTURISTIC UI ----------
+st.markdown('''
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+*{font-family:Inter,sans-serif}.stApp{background:radial-gradient(circle at 8% 0%,rgba(0,229,255,.11),transparent 28%),radial-gradient(circle at 95% 8%,rgba(124,58,237,.14),transparent 30%),#060a12}.block-container{max-width:1450px;padding-top:1.5rem;padding-bottom:3rem}.hero{padding:30px;border-radius:24px;border:1px solid rgba(0,229,255,.18);background:linear-gradient(135deg,rgba(12,24,40,.94),rgba(17,13,35,.94));box-shadow:0 0 45px rgba(0,229,255,.07);margin-bottom:22px}.eyebrow{font-size:.75rem;letter-spacing:.16em;font-weight:800;color:#63eaff}.hero h1{font-size:2.35rem;margin:.25rem 0}.muted{color:#93a2b8}.card{padding:18px;border-radius:18px;border:1px solid rgba(255,255,255,.07);background:rgba(13,20,33,.82)}[data-testid='stMetric']{background:linear-gradient(145deg,rgba(15,27,45,.95),rgba(10,15,26,.95));border:1px solid rgba(0,229,255,.12);border-radius:18px;padding:15px}.stButton>button,.stDownloadButton>button{border-radius:12px;border:1px solid rgba(0,229,255,.22);font-weight:700;background:linear-gradient(135deg,#10263a,#19162d);color:white}.stButton>button:hover,.stDownloadButton>button:hover{border-color:#00e5ff;box-shadow:0 0 18px rgba(0,229,255,.15)}div[data-testid='stExpander']{border:1px solid rgba(255,255,255,.08);border-radius:16px;background:rgba(8,14,25,.65)}.badge{display:inline-block;padding:5px 10px;border-radius:99px;background:rgba(0,229,255,.08);border:1px solid rgba(0,229,255,.18);color:#8defff;font-size:.72rem;font-weight:800}.section{font-size:.78rem;letter-spacing:.12em;font-weight:800;color:#63eaff;text-transform:uppercase;margin:12px 0 7px}.small{font-size:.84rem;color:#93a2b8}
+</style>
+''', unsafe_allow_html=True)
 
-STATUS_OPTIONS = ["Čeka odgovor", "Naručeno", "U dolasku", "Problem", "Stiglo", "Otkazano"]
-ODGOVOR_OPTIONS = ["Da", "Ne", "Djelimično"]
+SUPABASE_URL = st.secrets['SUPABASE_URL'].rstrip('/')
+SUPABASE_KEY = st.secrets.get('SUPABASE_PUBLISHABLE_KEY', st.secrets.get('SUPABASE_SECRET_KEY',''))
+TABLE='narudzbe'; BUCKET='fakture'
+STATUS=['Čeka odgovor','Naručeno','U dolasku','Stiglo','Problem','Otkazano']; ODG=['Da','Ne','Djelimično']
 
-def public_headers():
-    return {"apikey": SUPABASE_KEY, "Content-Type": "application/json"}
+def headers(token=None): return {'apikey':SUPABASE_KEY,'Authorization':f"Bearer {token or SUPABASE_KEY}",'Content-Type':'application/json','Prefer':'return=representation'}
+def url(): return f'{SUPABASE_URL}/rest/v1/{TABLE}'
 
-def auth_headers():
-    return {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {st.session_state.access_token}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation",
-    }
+def auth_login(email,password):
+    r=requests.post(f'{SUPABASE_URL}/auth/v1/token?grant_type=password',headers={'apikey':SUPABASE_KEY,'Content-Type':'application/json'},json={'email':email,'password':password},timeout=20)
+    if r.status_code==200:
+        d=r.json(); st.session_state.update(logged_in=True,access_token=d['access_token'],user_id=d['user']['id'],email=d['user'].get('email',email)); return True,''
+    return False,r.json().get('msg',r.text)
 
-def sign_up(email, password):
-    return requests.post(
-        f"{SUPABASE_URL}/auth/v1/signup",
-        headers=public_headers(),
-        json={"email": email, "password": password},
-        timeout=20,
-    )
+def auth_register(email,password):
+    r=requests.post(f'{SUPABASE_URL}/auth/v1/signup',headers={'apikey':SUPABASE_KEY,'Content-Type':'application/json'},json={'email':email,'password':password},timeout=20)
+    if r.status_code in (200,201):
+        d=r.json()
+        if d.get('access_token'):
+            st.session_state.update(logged_in=True,access_token=d['access_token'],user_id=d['user']['id'],email=d['user'].get('email',email))
+        return True, 'Registracija uspješna. Ako je uključena potvrda emaila, potvrdi email pa se prijavi.'
+    return False,r.json().get('msg',r.text)
 
-def sign_in(email, password):
-    return requests.post(
-        f"{SUPABASE_URL}/auth/v1/token?grant_type=password",
-        headers=public_headers(),
-        json={"email": email, "password": password},
-        timeout=20,
-    )
+def login_screen():
+    st.markdown("<div class='hero'><div class='eyebrow'>ORDER CONTROL SYSTEM • ONLINE</div><h1>📦 Order Hub</h1><div class='muted'>Centralno mjesto za narudžbe, rokove, statuse i fakture.</div></div>",unsafe_allow_html=True)
+    a,b=st.tabs(['🔐 Prijava','➕ Registracija'])
+    with a:
+        with st.form('login'):
+            e=st.text_input('Email'); p=st.text_input('Lozinka',type='password')
+            if st.form_submit_button('UĐI U SISTEM',use_container_width=True):
+                ok,msg=auth_login(e.strip(),p); st.error(msg) if not ok else st.rerun()
+    with b:
+        with st.form('register'):
+            e=st.text_input('Email',key='re'); p=st.text_input('Lozinka',type='password',key='rp'); p2=st.text_input('Ponovi lozinku',type='password')
+            if st.form_submit_button('KREIRAJ RAČUN',use_container_width=True):
+                if p!=p2: st.error('Lozinke se ne podudaraju.')
+                elif len(p)<6: st.error('Lozinka mora imati najmanje 6 znakova.')
+                else:
+                    ok,msg=auth_register(e.strip(),p); (st.rerun() if ok and st.session_state.get('logged_in') else st.success(msg)) if ok else st.error(msg)
 
-def db_url():
-    return f"{SUPABASE_URL}/rest/v1/{TABLE}"
+if not st.session_state.get('logged_in'):
+    login_screen(); st.stop()
+TOKEN=st.session_state.access_token
 
-def load_orders():
-    r = requests.get(
-        db_url(),
-        headers=auth_headers(),
-        params={"select": "*", "order": "id.desc"},
-        timeout=20,
-    )
-    if r.status_code != 200:
-        st.error("Ne mogu učitati narudžbe.")
-        st.code(r.text)
-        return pd.DataFrame()
+def load():
+    r=requests.get(url(),headers=headers(TOKEN),params={'select':'*','order':'id.desc'},timeout=20)
+    if r.status_code!=200: st.error('Greška pri učitavanju baze.'); st.code(r.text); return pd.DataFrame()
     return pd.DataFrame(r.json())
 
-def insert_order(order):
-    order["user_id"] = st.session_state.user_id
-    r = requests.post(db_url(), headers=auth_headers(), json=order, timeout=20)
-    if r.status_code not in (200, 201):
-        st.error("Greška pri spremanju narudžbe.")
-        st.code(r.text)
-        return False
+def insert(d):
+    d['user_id']=st.session_state.user_id
+    r=requests.post(url(),headers=headers(TOKEN),json=d,timeout=20)
+    if r.status_code not in (200,201): st.error('Greška pri spremanju.'); st.code(r.text); return False
     return True
 
-def update_order(order_id, values):
-    r = requests.patch(
-        f"{db_url()}?id=eq.{order_id}",
-        headers=auth_headers(),
-        json=values,
-        timeout=20,
-    )
-    if r.status_code not in (200, 204):
-        st.error("Greška pri izmjeni narudžbe.")
-        st.code(r.text)
-        return False
+def update(i,d):
+    r=requests.patch(f'{url()}?id=eq.{i}',headers=headers(TOKEN),json=d,timeout=20)
+    if r.status_code not in (200,204): st.error('Greška pri izmjeni.'); st.code(r.text); return False
     return True
 
-def delete_order(order_id):
-    r = requests.delete(
-        f"{db_url()}?id=eq.{order_id}",
-        headers=auth_headers(),
-        timeout=20,
-    )
-    if r.status_code not in (200, 204):
-        st.error("Greška pri brisanju.")
-        st.code(r.text)
-        return False
-    return True
+def delete(i):
+    r=requests.delete(f'{url()}?id=eq.{i}',headers=headers(TOKEN),timeout=20); return r.status_code in (200,204)
 
-for key, default in {
-    "access_token": None,
-    "user_id": None,
-    "user_email": None,
-    "edit_id": None,
-    "form_version": 0,
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
+def upload_invoice(order_id,file):
+    safe=''.join(c if c.isalnum() or c in '._-' else '_' for c in file.name)
+    path=f"{st.session_state.user_id}/{order_id}/{safe}"
+    r=requests.post(f'{SUPABASE_URL}/storage/v1/object/{BUCKET}/{path}',headers={'apikey':SUPABASE_KEY,'Authorization':f'Bearer {TOKEN}','Content-Type':file.type or 'application/octet-stream','x-upsert':'true'},data=file.getvalue(),timeout=60)
+    if r.status_code not in (200,201): st.error('Upload fakture nije uspio.'); st.code(r.text); return False
+    return update(order_id,{'faktura_path':path})
 
-def logout():
-    st.session_state.access_token = None
-    st.session_state.user_id = None
-    st.session_state.user_email = None
-    st.session_state.edit_id = None
-    st.rerun()
+def signed_url(path):
+    r=requests.post(f'{SUPABASE_URL}/storage/v1/object/sign/{BUCKET}/{path}',headers=headers(TOKEN),json={'expiresIn':3600},timeout=20)
+    if r.status_code==200:
+        d=r.json(); s=d.get('signedURL') if isinstance(d,dict) else None
+        return f"{SUPABASE_URL}/storage/v1{s}" if s else None
+    return None
 
-def show_login():
-    st.title("📦 Praćenje narudžbi")
-    st.caption("Svaki korisnik vidi samo svoje narudžbe.")
+def delete_invoice(path,order_id):
+    r=requests.delete(f'{SUPABASE_URL}/storage/v1/object/{BUCKET}/{path}',headers=headers(TOKEN),timeout=30)
+    if r.status_code not in (200,204): return False
+    return update(order_id,{'faktura_path':None})
 
-    login_tab, register_tab = st.tabs(["🔐 Prijava", "➕ Registracija"])
+def late(row):
+    if row.get('status') in ('Stiglo','Otkazano'): return False
+    try: return pd.to_datetime(row.get('kada_dolazi')).date()<date.today()
+    except: return False
 
-    with login_tab:
-        email = st.text_input("Email", key="login_email")
-        password = st.text_input("Lozinka", type="password", key="login_password")
+def ddate(v):
+    try:return pd.to_datetime(v).date()
+    except:return date.today()
 
-        if st.button("Prijavi se", use_container_width=True):
-            if not email or not password:
-                st.warning("Unesi email i lozinku.")
-            else:
-                r = sign_in(email.strip(), password)
-                if r.status_code == 200:
-                    data = r.json()
-                    st.session_state.access_token = data["access_token"]
-                    st.session_state.user_id = data["user"]["id"]
-                    st.session_state.user_email = data["user"]["email"]
-                    st.rerun()
-                else:
-                    st.error("Prijava nije uspjela.")
-                    st.code(r.text)
+df=load()
+with st.sidebar:
+    st.markdown('## ⚡ ORDER HUB')
+    st.markdown('<span class="badge">SECURE SESSION</span>',unsafe_allow_html=True)
+    st.write(''); st.write(f"👤 **{st.session_state.get('email','')}**")
+    st.divider(); st.caption('Tvoji podaci su odvojeni od drugih korisnika.')
+    if st.button('🚪 Odjava',use_container_width=True): st.session_state.clear(); st.rerun()
 
-    with register_tab:
-        new_email = st.text_input("Email", key="register_email")
-        new_password = st.text_input("Lozinka", type="password", key="register_password")
-        repeat_password = st.text_input("Ponovi lozinku", type="password", key="register_repeat")
+st.markdown("<div class='hero'><div class='eyebrow'>PROCUREMENT DASHBOARD</div><h1>📦 Praćenje narudžbi</h1><div class='muted'>Brz pregled svega što je naručeno, šta stiže i gdje postoji problem.</div></div>",unsafe_allow_html=True)
 
-        if st.button("Napravi nalog", use_container_width=True):
-            if not new_email or not new_password:
-                st.warning("Unesi email i lozinku.")
-            elif len(new_password) < 6:
-                st.warning("Lozinka mora imati najmanje 6 karaktera.")
-            elif new_password != repeat_password:
-                st.warning("Lozinke se ne podudaraju.")
-            else:
-                r = sign_up(new_email.strip(), new_password)
-                if r.status_code in (200, 201):
-                    data = r.json()
-                    if data.get("access_token") and data.get("user"):
-                        st.session_state.access_token = data["access_token"]
-                        st.session_state.user_id = data["user"]["id"]
-                        st.session_state.user_email = data["user"]["email"]
-                        st.rerun()
-                    else:
-                        st.success("Nalog je napravljen. Provjeri email i potvrdi registraciju, pa se onda prijavi.")
-                else:
-                    st.error("Registracija nije uspjela.")
-                    st.code(r.text)
+if len(df):
+    active=df[~df.status.isin(['Stiglo','Otkazano'])]; arrived=df[df.status=='Stiglo']; cancelled=df[df.status=='Otkazano']
+    metrics=[len(df),len(df[df.status=='Čeka odgovor']),len(df[df.status=='U dolasku']),len(df[df.status=='Problem']),sum(df.apply(late,axis=1))]
+else: active=arrived=cancelled=pd.DataFrame(); metrics=[0]*5
+m=st.columns(5)
+for c,label,val in zip(m,['📦 Ukupno','⏳ Čeka odgovor','🚚 U dolasku','⚠️ Problem','🔴 Kasni'],metrics): c.metric(label,val)
 
-if not st.session_state.access_token:
-    show_login()
-    st.stop()
+with st.expander('➕ NOVA NARUDŽBA',expanded=True):
+    with st.form('new',clear_on_submit=True):
+        a,b=st.columns(2)
+        with a:
+            supplier=st.text_input('Dobavljač',placeholder='npr. Goran, CNC Centar...'); machine=st.text_input('Za koju mašinu',placeholder='npr. Pakerica 1'); ordered=st.text_area('Šta je naručeno',placeholder='Dio, količina, specifikacija...')
+        with b:
+            od=st.date_input('Datum narudžbe',date.today()); arrival=st.date_input('Kada dolazi',date.today()); status=st.selectbox('Status',STATUS); reply=st.selectbox('Odgovorio',ODG)
+        missing=st.text_area('Šta nemaju / zamjena'); note=st.text_area('Napomena')
+        if st.form_submit_button('💾 SAČUVAJ NARUDŽBU',use_container_width=True):
+            if not supplier.strip() or not ordered.strip(): st.error('Unesi dobavljača i šta je naručeno.')
+            elif insert({'dobavljac':supplier.strip(),'masina':machine.strip(),'sta_je_naruceno':ordered.strip(),'datum_narudzbe':od.isoformat(),'kada_dolazi':arrival.isoformat(),'status':status,'odgovorio':reply,'sta_nemaju':missing.strip(),'napomena':note.strip()}): st.success('Narudžba je sačuvana.'); st.rerun()
 
-top1, top2 = st.columns([5, 1])
-with top1:
-    st.title("📦 Moje narudžbe")
-    st.caption(f"Prijavljen: {st.session_state.user_email}")
-with top2:
-    st.write("")
-    st.write("")
-    if st.button("Odjavi se"):
-        logout()
+def show(view,prefix):
+    if len(view)==0: st.info('Nema narudžbi u ovoj sekciji.'); return
+    q=st.text_input('🔎 Pretraga',placeholder='Dobavljač, mašina, dio...',key=prefix+'q')
+    f1,f2=st.columns(2)
+    with f1: sup=st.selectbox('Dobavljač',['Svi']+sorted(view.dobavljac.fillna('').astype(str).unique()),key=prefix+'s')
+    with f2: sta=st.selectbox('Status',['Svi']+[x for x in STATUS if x in view.status.tolist()],key=prefix+'t')
+    x=view.copy()
+    if sup!='Svi': x=x[x.dobavljac==sup]
+    if sta!='Svi': x=x[x.status==sta]
+    if q.strip(): x=x[x.apply(lambda r:q.lower() in ' '.join(r.astype(str)).lower(),axis=1)]
+    for _,r in x.iterrows():
+        late_tag=' • 🔴 KASNI' if late(r) else ''
+        with st.expander(f"#{r.id}  |  {r.dobavljac}  |  {r.sta_je_naruceno}  |  {r.status}{late_tag}"):
+            c1,c2,c3=st.columns(3); c1.write(f"**Mašina:** {r.get('masina','')}"); c2.write(f"**Naručeno:** {r.get('datum_narudzbe','')}"); c3.write(f"**Dolazi:** {r.get('kada_dolazi','')}")
+            st.write(f"**Šta je naručeno:** {r.get('sta_je_naruceno','')}"); st.write(f"**Odgovorio:** {r.get('odgovorio','')}"); st.write(f"**Šta nemaju:** {r.get('sta_nemaju','')}"); st.write(f"**Napomena:** {r.get('napomena','')}")
+            path=r.get('faktura_path')
+            if path and str(path)!='nan':
+                st.success('📎 Faktura je priložena.')
+                su=signed_url(path)
+                if su: st.link_button('👁️ Otvori fakturu',su,use_container_width=True)
+            else: st.caption('📎 Nema fakture.')
+            b1,b2,b3,b4=st.columns(4)
+            with b1:
+                if r.status!='Stiglo' and st.button('✅ Stiglo',key=f'{prefix}a{r.id}'): update(r.id,{'status':'Stiglo'}); st.rerun()
+            with b2:
+                if r.status!='Otkazano' and st.button('❌ Otkaži',key=f'{prefix}c{r.id}'): update(r.id,{'status':'Otkazano'}); st.rerun()
+            with b3:
+                if r.status in ('Stiglo','Otkazano') and st.button('↩️ Vrati aktivno',key=f'{prefix}v{r.id}'): update(r.id,{'status':'Naručeno'}); st.rerun()
+            with b4:
+                if st.button('🗑️ Obriši',key=f'{prefix}d{r.id}'):
+                    if delete(r.id): st.rerun()
+            file=st.file_uploader('📎 Dodaj / zamijeni fakturu',type=['pdf','png','jpg','jpeg','webp'],key=f'{prefix}f{r.id}')
+            if file is not None and st.button('⬆️ Sačuvaj fakturu',key=f'{prefix}u{r.id}'):
+                if upload_invoice(r.id,file): st.success('Faktura je sačuvana.'); st.rerun()
+            if path and str(path)!='nan' and st.button('🗑️ Obriši fakturu',key=f'{prefix}df{r.id}'):
+                if delete_invoice(path,r.id): st.rerun()
 
-df = load_orders()
+T1,T2,T3=st.tabs(['🟢 AKTIVNE','✅ STIGLO','❌ OTKAZANO'])
+with T1: show(active,'act')
+with T2: show(arrived,'arr')
+with T3: show(cancelled,'can')
 
-if df.empty:
-    df = pd.DataFrame(columns=[
-        "id","dobavljac","masina","sta_je_naruceno","datum_narudzbe",
-        "kada_dolazi","status","odgovorio","sta_nemaju","napomena"
-    ])
-
-for col in ["dobavljac","masina","sta_je_naruceno","datum_narudzbe","kada_dolazi","status","odgovorio","sta_nemaju","napomena"]:
-    if col in df.columns:
-        df[col] = df[col].fillna("")
-
-active_df = df[~df["status"].isin(["Stiglo", "Otkazano"])].copy()
-arrived_df = df[df["status"] == "Stiglo"].copy()
-canceled_df = df[df["status"] == "Otkazano"].copy()
-
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Aktivne", len(active_df))
-m2.metric("Stiglo", len(arrived_df))
-m3.metric("Otkazano", len(canceled_df))
-m4.metric("Ukupno", len(df))
-
-st.markdown("---")
-
-with st.expander("➕ Dodaj novu narudžbu", expanded=True):
-    form_key = f"add_order_{st.session_state.form_version}"
-    with st.form(form_key, clear_on_submit=True):
-        left, right = st.columns(2)
-        with left:
-            dobavljac = st.text_input("Dobavljač")
-            masina = st.text_input("Za koju mašinu je naručeno")
-            naruceno = st.text_area("Šta je naručeno")
-        with right:
-            datum_narudzbe = st.date_input("Kad je naručeno", value=date.today())
-            kada_dolazi = st.date_input("Kada dolazi", value=date.today())
-            status = st.selectbox("Status", STATUS_OPTIONS)
-            odgovorio = st.selectbox("Da li je odgovorio", ODGOVOR_OPTIONS)
-        sta_nemaju = st.text_area("Šta nemaju od onog što nam treba")
-        napomena = st.text_area("Napomena")
-
-        if st.form_submit_button("Sačuvaj narudžbu"):
-            if not dobavljac.strip():
-                st.warning("Unesi dobavljača.")
-            elif not naruceno.strip():
-                st.warning("Unesi šta je naručeno.")
-            else:
-                order = {
-                    "dobavljac": dobavljac.strip(),
-                    "masina": masina.strip(),
-                    "sta_je_naruceno": naruceno.strip(),
-                    "datum_narudzbe": datum_narudzbe.strftime("%Y-%m-%d"),
-                    "kada_dolazi": kada_dolazi.strftime("%Y-%m-%d"),
-                    "status": status,
-                    "odgovorio": odgovorio,
-                    "sta_nemaju": sta_nemaju.strip(),
-                    "napomena": napomena.strip(),
-                }
-                if insert_order(order):
-                    st.session_state.form_version += 1
-                    st.rerun()
-
-st.markdown("---")
-st.subheader("📌 Aktivne narudžbe")
-
-if active_df.empty:
-    st.info("Nema aktivnih narudžbi.")
-else:
-    for _, row in active_df.iterrows():
-        order_id = int(row["id"])
-        with st.container(border=True):
-            st.write(f"### {row['dobavljac']}")
-            st.write(f"**Mašina:** {row['masina']}")
-            st.write(f"**Naručeno:** {row['sta_je_naruceno']}")
-            st.write(f"**Status:** {row['status']}")
-            st.write(f"**Kada dolazi:** {row['kada_dolazi']}")
-
-            b1, b2, b3, _ = st.columns([1, 1, 1, 5])
-            if b1.button("✏️ Edit", key=f"edit_{order_id}"):
-                st.session_state.edit_id = order_id
-                st.rerun()
-            if b2.button("✅ Stiglo", key=f"arrived_{order_id}"):
-                if update_order(order_id, {"status": "Stiglo"}):
-                    st.rerun()
-            if b3.button("🚫 Otkaži", key=f"cancel_{order_id}"):
-                if update_order(order_id, {"status": "Otkazano"}):
-                    st.rerun()
-
-st.markdown("---")
-st.subheader("✅ Roba koja je stigla")
-
-if arrived_df.empty:
-    st.info("Još nema robe označene kao stigla.")
-else:
-    for _, row in arrived_df.iterrows():
-        order_id = int(row["id"])
-        with st.container(border=True):
-            st.write(f"### ✅ {row['dobavljac']}")
-            st.write(f"**Mašina:** {row['masina']}")
-            st.write(f"**Stiglo:** {row['sta_je_naruceno']}")
-            b1, b2, _ = st.columns([1, 1, 6])
-            if b1.button("✏️ Edit", key=f"edit_arrived_{order_id}"):
-                st.session_state.edit_id = order_id
-                st.rerun()
-            if b2.button("↩️ Vrati", key=f"return_{order_id}"):
-                if update_order(order_id, {"status": "Naručeno"}):
-                    st.rerun()
-
-with st.expander("🚫 Otkazano"):
-    if canceled_df.empty:
-        st.info("Nema otkazanih narudžbi.")
+st.markdown('---')
+with st.expander('✏️ UREDI NARUDŽBU'):
+    if len(df)==0: st.info('Nema podataka.')
     else:
-        for _, row in canceled_df.iterrows():
-            st.write(f"**{row['dobavljac']}** — {row['sta_je_naruceno']} ({row['masina']})")
+        choices={f"#{r.id} • {r.dobavljac} • {r.sta_je_naruceno}":r.id for _,r in df.iterrows()}; label=st.selectbox('Odaberi',list(choices)); rid=choices[label]; r=df[df.id==rid].iloc[0]
+        with st.form(f'edit{rid}'):
+            a,b=st.columns(2)
+            with a: es=st.text_input('Dobavljač',str(r.get('dobavljac',''))); em=st.text_input('Mašina',str(r.get('masina',''))); eo=st.text_area('Šta je naručeno',str(r.get('sta_je_naruceno','')))
+            with b:
+                ed=st.date_input('Datum narudžbe',ddate(r.get('datum_narudzbe'))); ea=st.date_input('Kada dolazi',ddate(r.get('kada_dolazi'))); est=st.selectbox('Status',STATUS,index=STATUS.index(r.status) if r.status in STATUS else 0); er=st.selectbox('Odgovorio',ODG,index=ODG.index(r.odgovorio) if r.odgovorio in ODG else 0)
+            e_missing=st.text_area('Šta nemaju',str(r.get('sta_nemaju',''))); e_note=st.text_area('Napomena',str(r.get('napomena','')))
+            if st.form_submit_button('💾 SAČUVAJ IZMJENE',use_container_width=True):
+                if update(rid,{'dobavljac':es,'masina':em,'sta_je_naruceno':eo,'datum_narudzbe':ed.isoformat(),'kada_dolazi':ea.isoformat(),'status':est,'odgovorio':er,'sta_nemaju':e_missing,'napomena':e_note}): st.success('Izmjene sačuvane.'); st.rerun()
 
-if st.session_state.edit_id is not None:
-    selected = df[df["id"] == st.session_state.edit_id]
-    if not selected.empty:
-        row = selected.iloc[0]
-        st.markdown("---")
-        st.subheader("✏️ Uredi narudžbu")
-
-        with st.form("edit_order_form"):
-            left, right = st.columns(2)
-            with left:
-                edit_dobavljac = st.text_input("Dobavljač", value=str(row["dobavljac"]))
-                edit_masina = st.text_input("Mašina", value=str(row["masina"]))
-                edit_naruceno = st.text_area("Šta je naručeno", value=str(row["sta_je_naruceno"]))
-            with right:
-                edit_datum = st.date_input(
-                    "Datum narudžbe",
-                    value=pd.to_datetime(row["datum_narudzbe"]).date() if row["datum_narudzbe"] else date.today(),
-                )
-                edit_dolazi = st.date_input(
-                    "Kada dolazi",
-                    value=pd.to_datetime(row["kada_dolazi"]).date() if row["kada_dolazi"] else date.today(),
-                )
-                current_status = row["status"] if row["status"] in STATUS_OPTIONS else "Naručeno"
-                edit_status = st.selectbox("Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(current_status))
-                current_odgovor = row["odgovorio"] if row["odgovorio"] in ODGOVOR_OPTIONS else "Da"
-                edit_odgovorio = st.selectbox("Odgovorio", ODGOVOR_OPTIONS, index=ODGOVOR_OPTIONS.index(current_odgovor))
-
-            edit_nemaju = st.text_area("Šta nemaju", value=str(row["sta_nemaju"]))
-            edit_napomena = st.text_area("Napomena", value=str(row["napomena"]))
-
-            save_col, close_col = st.columns([1, 5])
-            save = save_col.form_submit_button("Sačuvaj izmjene")
-            close = close_col.form_submit_button("Zatvori")
-
-            if close:
-                st.session_state.edit_id = None
-                st.rerun()
-
-            if save:
-                updated = {
-                    "dobavljac": edit_dobavljac.strip(),
-                    "masina": edit_masina.strip(),
-                    "sta_je_naruceno": edit_naruceno.strip(),
-                    "datum_narudzbe": edit_datum.strftime("%Y-%m-%d"),
-                    "kada_dolazi": edit_dolazi.strftime("%Y-%m-%d"),
-                    "status": edit_status,
-                    "odgovorio": edit_odgovorio,
-                    "sta_nemaju": edit_nemaju.strip(),
-                    "napomena": edit_napomena.strip(),
-                }
-                if update_order(st.session_state.edit_id, updated):
-                    st.session_state.edit_id = None
-                    st.rerun()
-
-st.markdown("---")
-with st.expander("🗑️ Obriši narudžbu"):
-    if df.empty:
-        st.info("Nema narudžbi.")
-    else:
-        options = {}
-        for _, row in df.iterrows():
-            label = f"{row['id']} | {row['dobavljac']} | {row['sta_je_naruceno']}"
-            options[label] = int(row["id"])
-
-        selected_label = st.selectbox("Odaberi narudžbu", list(options.keys()))
-        confirm = st.checkbox("Potvrđujem brisanje")
-
-        if st.button("Obriši narudžbu"):
-            if not confirm:
-                st.warning("Označi potvrdu za brisanje.")
-            elif delete_order(options[selected_label]):
-                st.rerun()
+with st.expander('📥 EXPORT U EXCEL'):
+    if len(df):
+        ex=df.drop(columns=['user_id','faktura_path'],errors='ignore').copy(); buf=BytesIO()
+        with pd.ExcelWriter(buf,engine='openpyxl') as w: ex.to_excel(w,index=False,sheet_name='Narudžbe')
+        st.download_button('📊 Preuzmi Excel',buf.getvalue(),'narudzbe_export.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',use_container_width=True)
+    else: st.info('Nema podataka.')
